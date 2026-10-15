@@ -5,7 +5,7 @@ const dataMatch = html.match(/let users=(\[.*?\]); let orders=(\[.*?\]); let fil
 const columnMatch = html.match(/const USER_COLS=(\[.*?\]); const ORDER_COLS=(\[.*?\]);/s);
 
 if (!dataMatch || !columnMatch) {
-  throw new Error("无法识别 V1.9 的内嵌数据或字段定义");
+  throw new Error("无法识别内嵌数据或字段定义");
 }
 
 const users = JSON.parse(dataMatch[1]);
@@ -17,6 +17,13 @@ const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script
   .filter((script) => script.trim());
 
 for (const script of inlineScripts) {
+  new Function(script);
+}
+
+const externalScripts = [...html.matchAll(/<script\s+src="([^"]+)"/gi)].map(match => match[1]);
+for (const source of externalScripts) {
+  if (/^https?:/i.test(source)) throw new Error(`核心脚本不可依赖在线CDN：${source}`);
+  const script = await readFile(new URL(`../${source}`, import.meta.url), "utf8");
   new Function(script);
 }
 
@@ -35,3 +42,4 @@ console.log("项目检查通过");
 console.log(`用户样例：${users.length} 条，展示字段：${userColumns.length} 个`);
 console.log(`订单样例：${orders.length} 条，字段：${orderColumns.length} 个`);
 console.log(`内联脚本：${inlineScripts.length} 个，JavaScript 语法正常`);
+console.log(`本地脚本：${externalScripts.length} 个，文件存在且语法正常`);
