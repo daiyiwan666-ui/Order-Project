@@ -8,6 +8,7 @@ const importInput = document.getElementById('userImportFile');
 const importModal = document.getElementById('userImportModal');
 
 function publishUsers(nextUsers, nextContinuous, nextAlerts) {
+  if (document.documentElement.dataset.storage === 'cloud') throw new Error('云端模式必须通过受控接口保存，不能写入浏览器工作区。');
   if (userStorageWarning) throw new Error(userStorageWarning);
   if (localStorage.getItem('tdfx_workspace_v20') !== workspaceSnapshot)
     throw new Error('数据已在另一个窗口修改，请刷新后再操作，避免覆盖较新的数据。');
@@ -189,6 +190,7 @@ $('#userImportApply').addEventListener('click', () => {
 });
 
 function applyUserEdit(cam, col, value) {
+  if (document.documentElement.dataset.storage === 'cloud') return window.OrderCloud ? OrderCloud.edit(cam, col, value) : Promise.resolve(false);
   try {
     if (['转化跟踪', '转化后持续出单时长', '最后编辑时间', '年', '季度'].includes(col)) return false;
     const old = users.find(r => String(r['转化CAM']) === String(cam)); if (!old) return false;
@@ -227,7 +229,7 @@ function applyUserEdit(cam, col, value) {
 }
 
 // Persist migration once; subsequent ordinary renders never edit timestamps.
-try { publishUsers(users, continuousState, userAlerts); }
+try { if (document.documentElement.dataset.storage !== 'cloud') publishUsers(users, continuousState, userAlerts); }
 catch (error) { $('#userImportResult').textContent = `本地保存不可用：${error.message}。请启用浏览器存储后再编辑或上传。`; }
 renderAll();
 setInterval(() => {

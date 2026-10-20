@@ -7,3 +7,8 @@ npm-debug.log*
 *.tmp
 *.bak
 work/
+.env
+.env.*
+!.env.example
+supabase/.temp/
+supabase/.branches/

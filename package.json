@@ -1,14 +1,21 @@
 {
   "name": "conversion-data-analysis-assistant",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.1",
   "private": true,
-  "description": "转化数据分析小程序 V2.0：文件导入、每日订单更新与异常预警中心",
+  "description": "转化数据分析小程序 V2.1 Beta：登录、成员权限与云端人工读写",
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
     "check": "node scripts/check-project.mjs",
-    "test": "node scripts/test-user-import.mjs"
+    "test": "node scripts/test-user-import.mjs && node scripts/test-cloud-data.mjs",
+    "test:cloud-browser": "node scripts/test-cloud-browser.cjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.118.0"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }
