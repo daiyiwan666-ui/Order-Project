@@ -1,6 +1,7 @@
 /* File import and persistent warning centre for the users page. */
 const ImportCore = UserImportCore;
 let importWorkbook = null, importPlan = null, importFileName = '', warningFilter = 'all';
+let selectedWarningId = null;
 let importReadSequence = 0;
 let importParsed = null, importFileDigest = '', importCloudSession = null;
 let workspaceSnapshot = null;
@@ -76,10 +77,19 @@ refreshUserLossBell = function () {
 function warningCard(a) {
   const entry = a.entry, canLocate = users.some(r => String(r['转化CAM']) === a.cam);
   const canEdit = document.documentElement.dataset.storage!=='cloud'||window.OrderCloud?.canEdit();
-  const changes = entry.problems.map(p => `<tr><td>${esc(p.type)}</td><td>${esc(p.field)}</td><td>${esc(p.before)}</td><td>${esc(p.after)}</td><td>${esc(p.message)}</td></tr>`).join('');
-  return `<article class="warning-card"><div class="warning-card-head"><strong>CAM ${esc(a.cam || '缺失')}</strong><span class="mini">${esc(a.source)} · 行 ${esc(entry.rowNumber)} · ${esc(a.createdAt)}</span></div>
-    <div class="mini">${entry.action === 'review' ? '该行更新已暂缓，当前仍保留历史值。确认后会同步订单、流失信息、状态和出单时长。' : '该记录未写入，请修正源文件后重新上传。'}</div>
-    <div class="warning-table-wrap"><table class="table warning-table"><thead><tr><th>类型</th><th>字段</th><th>历史/对照值</th><th>文件值</th><th>说明</th></tr></thead><tbody>${changes}</tbody></table></div>
+  const before=entry.before||{},candidate=entry.candidate||{};
+  const fields=[...new Set([...ImportCore.DAILY,...entry.problems.map(p=>p.field)])];
+  const changes=fields.map(field=>{
+    const issue=entry.problems.find(p=>p.field===field);
+    const oldValue=Object.hasOwn(before,field)?before[field]:issue?.before??'';
+    const newValue=Object.hasOwn(candidate,field)?candidate[field]:issue?.after??'';
+    return `<tr><td>${esc(field)}</td><td>${esc(oldValue)}</td><td class="${String(oldValue??'')!==String(newValue??'')?'ui-file-changed':''}">${esc(newValue)}</td></tr>`;
+  }).join('');
+  const title=entry.problems.some(p=>p.type==='异常订单预警')?'异常订单预警':'数据异常预警';
+  return `<article class="warning-card"><div class="warning-card-head"><strong>${title}</strong><span class="mini">CAM ${esc(a.cam || '缺失')}</span></div><div class="mini" style="margin-bottom:16px">${esc(a.source)} · 第 ${esc(entry.rowNumber)} 行 · ${esc(a.createdAt)}</div>
+    <div class="notice">${entry.action === 'review' ? '该行更新已暂缓，当前仍保留历史值。确认后会同步订单、流失信息、状态和出单时长。' : '该记录未写入，请修正源文件后重新上传。'}<div style="margin-top:6px">${entry.problems.map(p=>esc(p.message)).join('<br>')}</div></div>
+    <div class="sectionTitle" style="margin:20px 0 10px">数据对比</div><div class="warning-table-wrap"><table class="table warning-table"><thead><tr><th>字段</th><th>当前数据</th><th>文件数据</th></tr></thead><tbody>${changes}</tbody></table></div>
+    <div class="mini" style="margin-top:16px">确认时会再次核对CAM版本；记录已被其他成员修改时，请刷新后重新上传核对。人工复盘字段保持原值。</div>
     <div class="warning-actions">${canLocate ? `<button class="btn" data-warning-locate="${esc(a.cam)}">查看</button>` : '<span class="mini">尚未入表</span>'}
       ${canEdit&&entry.action === 'review' ? `<button class="btn primary" data-warning-approve="${esc(a.id)}">确认更新</button>` : ''}
       ${canEdit?`<button class="btn" data-warning-ignore="${esc(a.id)}">忽略本次</button>`:''}</div></article>`;
@@ -88,16 +98,20 @@ openLossModal = function () { openWarningCentre(); };
 function openWarningCentre() {
   const pending = activeWarnings(), losses = pendingLossItems();
   $('#lossModal .modalhead b').textContent = '异常预警中心';
-  const tabs = [['all', '全部'], ['orders', '异常订单'], ['data', '数据异常'], ['loss', '流失待分析']];
+  const tabs = [['all', '全部', pending.length + losses.length], ['orders', '异常订单', pending.filter(a=>a.kind==='orders').length], ['data', '数据异常', pending.filter(a=>a.kind==='data').length], ['loss', '流失待分析', losses.length]];
   const filtered = pending.filter(a => warningFilter === 'all' || a.kind === warningFilter);
-  const lossCards = ['all', 'loss'].includes(warningFilter) ? losses.map(r => `<article class="warning-card"><div class="warning-card-head"><strong>流失待分析 · CAM ${esc(r['转化CAM'])}</strong><span>${fmt(num(r['转化下单量']))} 单</span></div><div class="mini">${esc(r['国家'])} · ${esc(r['商品标题'])} · ${esc(r['转化日期'])}</div><div class="warning-actions"><button class="btn" data-warning-locate="${esc(r['转化CAM'])}">查看</button></div></article>`).join('') : '';
-  $('#lossBody').innerHTML = `<div class="warning-tabs">${tabs.map(([k, label]) => `<button class="btn ${k === warningFilter ? 'primary' : ''}" data-warning-filter="${k}">${label}</button>`).join('')}</div>
-    <div class="mini">查看只定位记录；异常订单需明确确认后才更新。人工复盘字段保持原值。</div>
-    ${filtered.map(warningCard).join('')}${lossCards || ''}${!filtered.length && !lossCards ? '<div class="empty">暂无待处理预警</div>' : ''}`;
-  $('#lossModal').classList.add('open');
+  const items = filtered.map(a=>({id:a.id,title:a.entry.problems[0]?.message||'数据异常',cam:a.cam,source:a.source,html:warningCard(a)}));
+  if(['all','loss'].includes(warningFilter))losses.forEach(r=>items.push({id:'loss-'+r['转化CAM'],title:'流失待分析',cam:r['转化CAM'],source:r['商品标题'],html:`<article class="warning-card"><div class="warning-card-head"><strong>流失待分析 · CAM ${esc(r['转化CAM'])}</strong><span>${fmt(num(r['转化下单量']))} 单</span></div><div class="mini">${esc(r['国家'])} · ${esc(r['商品标题'])} · ${esc(r['转化日期'])}</div><div class="notice" style="margin-top:16px">流失原因与流失备注由人工复盘填写。点击查看可定位到名单记录。</div><div class="warning-actions"><button class="btn" data-warning-locate="${esc(r['转化CAM'])}">查看</button></div></article>`}));
+  if(!items.some(a=>a.id===selectedWarningId))selectedWarningId=items[0]?.id||null;
+  const selected=items.find(a=>a.id===selectedWarningId);
+  $('#lossBody').innerHTML = `<div class="mini" style="margin-bottom:16px">异常记录确认后才更新，人工复盘字段保留。</div><div class="warning-tabs" role="tablist">${tabs.map(([k, label, count]) => `<button role="tab" aria-selected="${k === warningFilter}" class="btn ${k === warningFilter ? 'primary' : ''}" data-warning-filter="${k}">${label}<span class="ui-tab-count">${count}</span></button>`).join('')}</div>
+    ${items.length?`<div class="ui-warning-layout"><div class="ui-warning-list" aria-label="待处理记录">${items.map(item=>`<button class="ui-warning-item ${item.id===selectedWarningId?'selected':''}" data-warning-select="${esc(item.id)}" aria-pressed="${item.id===selectedWarningId}"><strong>${esc(item.title)}</strong><span>CAM ${esc(item.cam||'缺失编号')}</span><small>${esc(item.source||'')}</small></button>`).join('')}</div><div class="ui-warning-detail">${selected.html}</div></div>`:'<div class="empty">当前分类暂无待处理预警</div>'}`;
+  const modal=$('#lossModal'),wasOpen=modal.classList.contains('open');modal.classList.add('open');
+  if(!wasOpen)$('#lossClose').focus();
 }
 $('#lossBody').addEventListener('click', async event => {
   const button = event.target.closest('button'); if (!button) return;
+  if (button.dataset.warningSelect) { selectedWarningId = button.dataset.warningSelect; openWarningCentre(); return; }
   if (button.dataset.warningFilter) { warningFilter = button.dataset.warningFilter; openWarningCentre(); return; }
   if (button.dataset.warningLocate) { locateUserByCam(button.dataset.warningLocate); return; }
   const id = button.dataset.warningApprove || button.dataset.warningIgnore;

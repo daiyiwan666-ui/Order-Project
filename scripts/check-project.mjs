@@ -27,6 +27,12 @@ for (const source of externalScripts) {
   new Function(script);
 }
 
+const stylesheets = [...html.matchAll(/<link\s+rel="stylesheet"\s+href="([^"]+)"/gi)].map(match => match[1]);
+for (const source of stylesheets) {
+  if (/^https?:/i.test(source)) throw new Error(`核心样式不可依赖在线CDN：${source}`);
+  await readFile(new URL(`../${source}`, import.meta.url), "utf8");
+}
+
 const camIds = users.map((row) => String(row["转化CAM"] || ""));
 const uniqueCamIds = new Set(camIds);
 
@@ -43,3 +49,4 @@ console.log(`用户样例：${users.length} 条，展示字段：${userColumns.l
 console.log(`订单样例：${orders.length} 条，字段：${orderColumns.length} 个`);
 console.log(`内联脚本：${inlineScripts.length} 个，JavaScript 语法正常`);
 console.log(`本地脚本：${externalScripts.length} 个，文件存在且语法正常`);
+console.log(`本地样式：${stylesheets.length} 个，文件存在`);

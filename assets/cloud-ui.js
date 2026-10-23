@@ -7,14 +7,14 @@
     gate.hidden=true;
     const note=document.createElement('div');note.className='local-mode-note';
     note.innerHTML='本地演示模式：修改只保存在本浏览器。 <a href="?mode=cloud">进入云端协作</a>';
-    document.querySelector('.main').prepend(note);return;
+    document.querySelector('.workspace-topbar').after(note);return;
   }
   const D=OrderCloudData;
   let client,member=null,currentUser=null,authMode='login',busy=false,ready=false,authSequence=0,authLoading=false;
   const pendingDrafts=new Map();
   const banner=document.createElement('div');banner.className='cloud-status';banner.setAttribute('role','status');banner.setAttribute('aria-live','polite');
   banner.innerHTML='<span id="cloudSaveStatus">正在连接云端…</span><button class="btn" id="cloudReload">刷新云端数据</button>';
-  document.querySelector('.main').prepend(banner);
+  document.querySelector('.workspace-topbar').after(banner);
   const draftBox=document.createElement('details');draftBox.className='cloud-drafts';draftBox.hidden=true;banner.append(draftBox);
   const account=document.createElement('div');account.className='cloud-account';document.querySelector('.side').append(account);
   function message(text,state='saved') {banner.dataset.state=state;document.getElementById('cloudSaveStatus').textContent=text;}
@@ -47,7 +47,7 @@
   function authForm(notice='') {
     gate.hidden=false;
     const register=authMode==='register',recovery=authMode==='recovery',reset=authMode==='reset';
-    gate.innerHTML=`<div class="cloud-card"><h1>转化数据分析</h1><p>${register?'注册网页账号，完成邮箱验证后登录。成员权限由管理员授予。':recovery?'设置新的网页登录密码。':reset?'输入账号邮箱，接收重设密码邮件。':'登录云端协作，和同事查看同一份数据。'}</p>
+    gate.innerHTML=`<div class="cloud-card"><div class="auth-brand-mark" aria-hidden="true">↗</div><div class="auth-eyebrow">运营工作台</div><h1>转化数据分析</h1><p>${register?'注册网页账号，完成邮箱验证后登录。成员权限由管理员授予。':recovery?'设置新的网页登录密码。':reset?'输入账号邮箱，接收重设密码邮件。':'登录云端协作，和同事查看同一份数据。'}</p>
       <form class="cloud-form" id="cloudAuthForm">${recovery?'':'<label>邮箱<input id="cloudEmail" name="email" type="email" autocomplete="username" required></label>'}
       ${reset?'':`<label>${recovery?'新密码':'密码'}<input id="cloudPassword" name="password" type="password" autocomplete="${register||recovery?'new-password':'current-password'}" ${register||recovery?'minlength="12"':''} required></label>`}
       <button class="btn primary" type="submit">${register?'注册账号':recovery?'保存新密码':reset?'发送重设邮件':'登录'}</button></form>

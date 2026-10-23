@@ -1,8 +1,8 @@
 {
   "name": "conversion-data-analysis-assistant",
-  "version": "2.1.0-beta.2",
+  "version": "2.1.0-beta.3",
   "private": true,
-  "description": "转化数据分析小程序 V2.1 Beta：云端文件导入、每日更新与共享预警",
+  "description": "转化数据分析小程序 V2.1 Beta：Tabler运营工作台、云端文件导入与共享预警",
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
     "check": "node scripts/check-project.mjs",

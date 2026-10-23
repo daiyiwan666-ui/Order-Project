@@ -1,2 +1,3 @@
 # Keep upstream browser bundles byte-for-byte, including whitespace in strings.
 assets/vendor/*.js -whitespace
+assets/vendor/*.css -whitespace

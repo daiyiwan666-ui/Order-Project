@@ -100,7 +100,12 @@ async function mockContext({loggedIn=true,role='admin',member=true,totalRows=1}=
   const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
   await page.goto(origin);return {context,page,state,errors};
 }
-async function ready(page) {await page.waitForFunction(()=>document.documentElement.dataset.cloudReady==='true');await page.locator('[data-page="users"]').click();}
+async function ready(page) {
+  await page.waitForFunction(()=>document.documentElement.dataset.cloudReady==='true');
+  await page.locator('[data-page="users"]').click();
+  // Existing edit scenarios deliberately select all fields through the new view UI.
+  await page.locator('#uiColumnSettings').click();await page.locator('[data-column-preset="all"]').click();await page.locator('[data-column-apply]').click();
+}
 async function edit(page,text) {
   const cell=page.locator('#userTable td[data-col="转化备注"]');await cell.fill(text);await cell.press('Enter');
 }
@@ -116,6 +121,26 @@ async function uploadDaily(page,orders,paid,name) {
   await new Promise((resolve,reject)=>{server.stdout.on('data',resolve);server.once('error',reject);server.once('exit',code=>reject(new Error('Test server exited '+code)));});
   const executablePath=process.env.CHROMIUM_PATH||(existsSync('/usr/bin/chromium')?'/usr/bin/chromium':undefined);
   browser=await chromium.launch({executablePath,headless:true,args:['--no-sandbox']});
+  {
+    const {page,state,context,errors}=await mockContext();
+    await page.waitForFunction(()=>document.documentElement.dataset.cloudReady==='true');await page.locator('[data-page="users"]').click();
+    assert.equal(await page.locator('#userTable th').count(),9);
+    await page.locator('#uiUserSearch').fill('not-a-real-product');assert.equal(await page.locator('#userTable .user-data-row').count(),0);
+    await page.locator('#clearUserFilters').click();assert.equal(await page.locator('#userTable .user-data-row').count(),1);
+    await page.locator('#uiStatusFilter').selectOption('待下单');assert.equal(await page.locator('#userTable .user-data-row').count(),1);
+    await page.locator('[data-cam-detail]').click();await page.locator('#uiDetailModal').waitFor({state:'visible'});
+    assert.match(await page.locator('#uiDetailModal').textContent(),/old note/);await page.keyboard.press('Escape');
+    await page.locator('#uiColumnSettings').click();await page.locator('#uiColumnModal input[value="转化备注"]').check();await page.locator('[data-column-apply]').click();
+    assert.equal(await page.locator('#userTable th').count(),10);assert.equal(state.writes,0);
+    await page.reload();await page.waitForFunction(()=>document.documentElement.dataset.cloudReady==='true');await page.locator('[data-page="users"]').click();
+    assert.equal(await page.locator('#userTable th').count(),10);
+    const downloadPromise=page.waitForEvent('download');await page.locator('#exportUsers').click();const download=await downloadPromise;
+    const stream=await download.createReadStream();let tsv='';for await(const chunk of stream)tsv+=chunk.toString('utf8');assert.match(tsv.split('\n')[0],/流失备注/);assert.match(tsv,/old note/);
+    assert.equal(state.writes,0);await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(()=>document.body.scrollWidth<=window.innerWidth),true);
+    await page.locator('#uiNavToggle').click();await page.locator('[data-page="analysis"]').click();assert.equal(await page.locator('#uiNavToggle').getAttribute('aria-expanded'),'false');
+    assert.deepEqual(errors,[]);await context.close();console.log('✓ 新版UI搜索、组合筛选、详情、列设置持久化、完整导出与手机导航');
+  }
   {
     const {page,state,context,errors}=await mockContext({loggedIn:false});
     await page.locator('#cloudEmail').waitFor();assert.equal(await page.locator('.app').isVisible(),false);
@@ -197,6 +222,11 @@ async function uploadDaily(page,orders,paid,name) {
     const context=await browser.newContext(),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.goto(origin+'/?mode=local');assert.equal(await page.locator('#userTable .user-data-row').count(),15);
     assert.match(await page.locator('.local-mode-note').textContent(),/本地演示模式/);
-    assert.deepEqual(errors,[]);await context.close();console.log('✓ 本地演示仍保留15条样例');
+    await page.setViewportSize({width:390,height:844});
+    for(const name of ['dashboard','analysis','users','orders']) {
+      await page.locator('#uiNavToggle').click();await page.locator(`[data-page="${name}"]`).click();
+      assert.equal(await page.evaluate(()=>document.body.scrollWidth<=window.innerWidth),true,name+' must stay inside mobile viewport');
+    }
+    assert.deepEqual(errors,[]);await context.close();console.log('✓ 本地演示仍保留15条样例，四个页面均适配手机宽度');
   }
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();server.kill();});
