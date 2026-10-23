@@ -47,5 +47,49 @@
     for(const [label,field] of Object.entries(fields)) row[label]=record[field]??'';
     return row;
   }
-  root.OrderCloudData=Object.freeze({FIELDS,MANUAL,wallTime,fromCam,manualPatch,periodsFor,fromOrder});
+  function importRows(parsed,currentUsers) {
+    const C=root.UserImportCore,versions=new Map(currentUsers.map(r=>[String(r['转化CAM']),r.__rowVersion]));
+    return parsed.rows.map(entry=>{
+      const data={};
+      for(const [label,field] of Object.entries(FIELDS)) {
+        if(!(label in entry.data))continue;
+        const value=entry.data[label];
+        if(['countries','ad_placements','owners','fulfillment_apps','conversion_reasons'].includes(field)) data[field]=C.tags(value);
+        else if(['converted_at','last_order_at'].includes(field)) {const stamp=C.stamp(value);data[field]=stamp?stamp.replace(' ','T')+'+08:00':value||null;}
+        else if(field==='lost_on')data[field]=C.stamp(value,false)||value||null;
+        else if(field==='is_lost')data[field]=C.loss(value)==='是'?true:C.loss(value)==='否'?false:value;
+        else data[field]=value;
+      }
+      data.source_extras=entry.sourceExtras||{};data.source_tags=entry.sourceTags??null;
+      return {row_number:entry.rowNumber,data,parse_issues:entry.errors||[],expected_version:versions.get(String(entry.data['转化CAM']))??null};
+    });
+  }
+  function fromAlert(record,batches=[]) {
+    const batch=batches.find(b=>b.id===record.import_batch_id),data=record.candidate_values||{};
+    const before=record.before_values?.cam_id?fromCam(record.before_values):null;
+    const candidate={};
+    for(const[label,field]of Object.entries(FIELDS)) {
+      const value=data[field];candidate[label]=Array.isArray(value)?value.join('、'):value??'';
+    }
+    for(const label of ['转化日期','最近下单日期']) {
+      const value=data[FIELDS[label]];try{candidate[label]=wallTime(value);}catch{candidate[label]=String(value??'');}
+    }
+    candidate['是否流失']=data.is_lost===true?'是':data.is_lost===false?'否':data.is_lost??'';
+    const problems=(record.issues||[]).map(p=>({...p,before:Array.isArray(p.before)?p.before.join('、'):p.before??'',after:Array.isArray(p.after)?p.after.join('、'):p.after??''}));
+    return {id:record.id,cam:record.source_cam_id||record.cam_id||'',state:record.alert_state,
+      source:batch?.file_name||'云端导入',createdAt:wallTime(record.created_at),__rowVersion:record.row_version,
+      entry:{action:record.is_confirmable?'review':'blocked',rowNumber:(record.source_rows||[]).join('、'),candidate,before,problems}};
+  }
+  function chunks(rows,maxRows=200,maxBytes=900000) {
+    const result=[];let chunk=[],size=2;
+    for(const row of rows){const n=new TextEncoder().encode(JSON.stringify(row)).length+1;
+      if(n>maxBytes)throw new Error('单行数据过大，请减少单元格内容后重新上传。');
+      if(chunk.length&&(chunk.length>=maxRows||size+n>maxBytes)){result.push(chunk);chunk=[];size=2;}
+      chunk.push(row);size+=n;
+    }
+    if(chunk.length)result.push(chunk);
+    if(result.length>100)throw new Error('文件分块超过100份，请拆分文件后上传。');
+    return result;
+  }
+  root.OrderCloudData=Object.freeze({FIELDS,MANUAL,wallTime,fromCam,manualPatch,periodsFor,fromOrder,importRows,fromAlert,chunks});
 })(typeof window==='undefined'?globalThis:window);

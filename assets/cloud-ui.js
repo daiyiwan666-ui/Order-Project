@@ -80,7 +80,9 @@
   async function allRows(table,key) {
     const rows=[];const pageSize=500;
     for(let offset=0;offset<=100000;offset+=pageSize) {
-      const {data,error}=await client.from(table).select('*').order(key,{ascending:true}).range(offset,offset+pageSize-1);
+      let query=client.from(table).select('*').order(key,{ascending:true}).range(offset,offset+pageSize-1);
+      if(table==='alerts')query=query.eq('alert_state','pending');
+      const {data,error}=await query;
       if(error)throw error;rows.push(...data);
       if(data.length<pageSize)return rows;
     }
@@ -89,11 +91,16 @@
   async function readWorkspace() {
     // Existing analytics needs complete data. Fetch every page, then publish once.
     // Server-side filtered display/aggregations are the next pagination phase.
-    const [cams,periods,projects]=await Promise.all([allRows('cams','cam_id'),allRows('cam_order_periods','id'),allRows('order_projects','id')]);
-    return {rows:cams.map(D.fromCam),periods,projects:projects.map(D.fromOrder)};
+    const [cams,periods,projects,alerts,batches]=await Promise.all([allRows('cams','cam_id'),allRows('cam_order_periods','id'),allRows('order_projects','id'),allRows('alerts','id'),allRows('import_batches','id')]);
+    return {rows:cams.map(D.fromCam),periods,projects:projects.map(D.fromOrder),alerts:alerts.map(a=>D.fromAlert(a,batches)),batches};
   }
+  let unfinishedImports=[];
   function publishWorkspace(snapshot) {
-    users=snapshot.rows;orders=snapshot.projects;continuousState={};userAlerts=[];
+    const previous=new Map(users.map(row=>[String(row['转化CAM']),Number(row['支付订单'])||0]));
+    users=snapshot.rows;orders=snapshot.projects;continuousState={};userAlerts=snapshot.alerts||[];
+    users.forEach(row=>{row.__paymentRise=previous.has(String(row['转化CAM']))?Math.max(0,Number(row['支付订单'])-previous.get(String(row['转化CAM']))):0;});
+    unfinishedImports=(snapshot.batches||[]).filter(b=>b.imported_by===currentUser?.id&&['prepared','processing'].includes(b.batch_state));
+    const resume=document.getElementById('cloudResumeImports');if(resume){resume.hidden=!unfinishedImports.length;resume.textContent=`未完成导入 ${unfinishedImports.length}`;}
     users.forEach(row=>{continuousState[String(row['转化CAM'])]=D.periodsFor(row,snapshot.periods);});
     renderAll();
   }
@@ -132,11 +139,14 @@
     const manage=document.getElementById('cloudManageMembers');if(manage)manage.onclick=()=>membersDialog();
     document.getElementById('cloudAddCam').disabled=member.member_role==='viewer';
     document.getElementById('cloudDeleteCam').hidden=member.member_role!=='admin';
+    document.getElementById('uploadUsers').disabled=member.member_role==='viewer';
     renderAll();
   }
   function setBusy(value) {
     busy=value;document.getElementById('cloudReload').disabled=value;
     const logoutButton=document.getElementById('cloudLogout');if(logoutButton)logoutButton.disabled=value;
+    for(const id of ['userImportSheet','userImportEncoding','userImportClose'])document.getElementById(id).disabled=value;
+    document.getElementById('uploadUsers').disabled=value||member?.member_role==='viewer';
   }
   async function mutate(params) {
     if(!ready)throw new Error('请先登录并完成云端加载。');
@@ -173,8 +183,54 @@
         if(ready){pendingDrafts.set(String(cam)+'|'+label,{cam,label,value,current:error.current?.[D.FIELDS[label]]});paintDrafts();draftBox.open=true;}
         message(`未完成保存：${explain(error)}`,'error');renderAll();return false;
       }
+    },
+    async importFile(session,progress) {
+      if(!ready||busy||authLoading)throw new Error('请先等待其他保存或读取完成。');
+      const sequence=authSequence;setBusy(true);
+      try {
+        const parts=D.chunks(session.rows);
+        if(!parts.length)throw new Error('文件没有可导入数据。');
+        let response=await rpc('op_import_file',{p_mode:'begin',p_args:{request_id:session.request_id,file_name:session.file_name,
+          file_sha256:session.file_sha256,sheet_name:session.sheet_name,total_rows:session.rows.length,chunk_count:parts.length}});
+        const batch=response.batch;session.batch_id=batch.id;
+        if(!['completed','partially_completed'].includes(batch.batch_state)) {
+          for(let i=0;i<parts.length;i++) {
+            progress(`正在上传 ${i+1}/${parts.length} 批…`);message(`正在上传 ${i+1}/${parts.length} 批…`,'saving');
+            await rpc('op_import_file',{p_mode:'chunk',p_args:{batch_id:batch.id,chunk_no:i,rows:parts[i]}});
+            if(sequence!==authSequence)throw new Error('登录状态已变化，请重新登录后查看导入结果。');
+          }
+          response=await processImport(batch.id,progress,sequence);
+        }
+        if(sequence!==authSequence)throw new Error('登录状态已变化，请重新登录后核对结果。');
+        const snapshot=await readWorkspace();if(sequence!==authSequence)throw new Error('登录状态已变化，请重新登录后核对结果。');
+        publishWorkspace(snapshot);message('✓ 导入结果已保存到云端');
+        return response.batch;
+      }catch(error){message(`导入未全部完成：${explain(error)}。已完成批次保留，可重试继续。`,'error');throw error;}
+      finally{setBusy(false);}
+    },
+    async resolveAlert(warning,decision) {
+      if(!ready||busy||authLoading)throw new Error('请等待其他保存或读取完成。');
+      setBusy(true);const sequence=authSequence;message('正在处理共享预警…','saving');
+      try {
+        const result=await rpc('op_resolve_alert',{p_id:warning.id,p_expected_version:warning.__rowVersion,p_decision:decision});
+        if(!result.ok)throw new Error('该预警已被处理，或CAM已变化。请刷新云端并重新核对，不会覆盖新数据。');
+        const snapshot=await readWorkspace();if(sequence!==authSequence)throw new Error('登录状态已变化，请重新登录后核对。');
+        publishWorkspace(snapshot);message('✓ 预警处理已保存到云端');
+      }catch(error){message(`预警未完成：${explain(error)}`,'error');throw error;}
+      finally{setBusy(false);}
     }
   };
+  OrderCloud.canEdit=()=>ready&&member?.member_role!=='viewer';
+  async function processImport(batchId,progress,sequence) {
+    for(let i=0;i<=100;i++) {
+      const result=await rpc('op_import_file',{p_mode:'process',p_args:{batch_id:batchId}});
+      if(sequence!==authSequence)throw new Error('登录状态已变化，请重新登录后核对结果。');
+      const b=result.batch;
+      progress(`云端已处理：新增 ${b.inserted_rows}，更新 ${b.updated_rows}，无变化 ${b.unchanged_rows}，预警 ${b.flagged_rows}，重复 ${b.duplicate_rows||0}`);
+      if(result.done)return result;
+    }
+    throw new Error('导入尚未全部完成，请继续重试。');
+  }
   // Preserve filters/analytics, but source fields and readonly accounts cannot edit.
   const originalCellEditor=userCellEditor;
   userCellEditor=function(row,label) {
@@ -185,24 +241,49 @@
   };
   const originalRenderOrders=renderOrders;
   renderOrders=function() {originalRenderOrders();document.querySelectorAll('#orderTable [contenteditable]').forEach(el=>el.setAttribute('contenteditable','false'));document.getElementById('saveState').textContent='云端读取 · 本轮订单推品页面只读';};
-  for(const id of ['uploadUsers','addOrder','saveOrders']) {
+  for(const id of ['addOrder','saveOrders']) {
     const button=document.getElementById(id);button.disabled=true;
     button.title=id==='uploadUsers'?'云端批量导入与预警确认将在下一阶段接入':'本轮订单推品页面只读';
   }
   // Capture legacy save handlers too: programmatic clicks must not write local caches.
   document.addEventListener('click',event=>{
-    if(event.target.closest('#uploadUsers,#userImportApply,#addOrder,#saveOrders,[data-warning-approve],[data-warning-ignore]')) {
+    if(event.target.closest('#addOrder,#saveOrders')) {
       event.preventDefault();event.stopImmediatePropagation();message('此项云端业务流程尚未开放，数据没有写入本地或云端。','error');
+    }
+  },true);
+  document.addEventListener('click',event=>{
+    if(busy&&event.target.closest('#uploadUsers,#cloudAddCam,#cloudDeleteCam,#cloudResumeImports')) {
+      event.preventDefault();event.stopImmediatePropagation();message('当前操作正在保存，请稍后再操作。','saving');
     }
   },true);
   const actions=document.querySelector('#users .actions');
   const add=document.createElement('button');add.className='btn primary';add.id='cloudAddCam';add.textContent='＋新增CAM';add.onclick=()=>newCamDialog();actions.prepend(add);
   const remove=document.createElement('button');remove.className='btn';remove.id='cloudDeleteCam';remove.textContent='删除CAM';remove.onclick=()=>deleteCam();actions.append(remove);
+  const resume=document.createElement('button');resume.className='btn';resume.id='cloudResumeImports';resume.hidden=true;resume.onclick=()=>resumeImports();actions.append(resume);
   document.querySelector('#users .footerline span:last-child').textContent='人工复盘字段自动保存到云端；源数据和系统字段只读';
   function dialog(title,body) {
     const el=document.createElement('div');el.className='cloud-dialog';el.setAttribute('role','dialog');el.setAttribute('aria-modal','true');
     el.innerHTML=`<div class="cloud-card"><div class="cloud-dialog-head"><h2>${title}</h2><button class="btn" data-close type="button">关闭</button></div>${body}<div class="cloud-message" data-error role="status"></div></div>`;
     el.querySelector('[data-close]').onclick=()=>{if(!busy)el.remove();};document.body.append(el);el.querySelector('input')?.focus();return el;
+  }
+  function resumeImports() {
+    const el=dialog('未完成的云端导入','<p>继续处理已上传完整的文件；若上传分块未收齐，可以终止本批次后重新选择文件。终止不会撤销已保存的记录。</p><div data-import-list></div>');
+    for(const batch of unfinishedImports) {
+      const row=document.createElement('div');row.className='cloud-member';
+      const text=document.createElement('strong');text.textContent=`${batch.file_name} · 已新增 ${batch.inserted_rows} / 更新 ${batch.updated_rows}`;row.append(text);
+      for(const [action,label]of [['resume','继续处理'],['cancel','终止本批次']]) {
+        const button=document.createElement('button');button.className='btn';button.textContent=label;
+        button.onclick=async()=>{
+          if(busy)return;setBusy(true);button.disabled=true;const sequence=authSequence;
+          try {
+            if(action==='resume')await processImport(batch.id,t=>{el.querySelector('[data-error]').textContent=t;},sequence);
+            else {if(!confirm('终止此导入并清理未处理的暂存内容？已经保存的数据会保留。'))return;await rpc('op_import_file',{p_mode:'cancel',p_args:{batch_id:batch.id}});}
+            const snapshot=await readWorkspace();if(sequence!==authSequence)throw new Error('登录状态已变化。');publishWorkspace(snapshot);el.remove();message('✓ 导入状态已更新');
+          }catch(error){el.querySelector('[data-error]').textContent=explain(error);}finally{setBusy(false);button.disabled=false;}
+        };row.append(button);
+      }
+      el.querySelector('[data-import-list]').append(row);
+    }
   }
   function newCamDialog() {
     const el=dialog('新增待下单CAM',`<p>新建待下单记录，下单量和支付订单均为 0。已有订单的历史 CAM 请在后续正式导入时迁入。</p><form class="cloud-form">

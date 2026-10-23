@@ -198,7 +198,13 @@
       } else {
         for (const k of ['负责人', '转化原因']) if (headers.includes(k)) data[k] = tags(values[headers.indexOf(k)]).join('、');
       }
-      rows.push({ rowNumber: headerIndex + i + 2, data, errors });
+      const mapped = new Set(Object.values(mapping));
+      const ignoredExtras = new Set(['标签','负责人','转化原因','转化备注','流失原因','流失备注','操作','备选推荐供端','是否完成','最近下单周','流失监控系统']);
+      const sourceExtras = Object.fromEntries(headers.map((h,index)=>[h,index])
+        .filter(([h,index])=>h && !mapped.has(index) && !ignoredExtras.has(h))
+        .map(([h,index])=>[h,values[index]??'']));
+      rows.push({ rowNumber: headerIndex + i + 2, data, errors, sourceExtras,
+        sourceTags: headers.includes('标签') ? tags(values[headers.indexOf('标签')]) : null });
     });
     return { mapping: Object.entries(mapping).map(([target, index]) => ({ target, source: headers[index] })), rows };
   }

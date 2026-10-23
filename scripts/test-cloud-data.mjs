@@ -26,3 +26,26 @@ test('持续出单完全使用云端区间，按北京时间映射，不能回�
   assert.equal(globalThis.UserImportCore.continuousDays(row,state,'2026-10-06 08:00:00'),3);
   assert.equal(D.periodsFor(row,[]).activeStart,'');
 });
+test('文件行发送原始归属、版本和解析问题，日期转换显式北京时间，人工字段不进导入',()=>{
+  const C=globalThis.UserImportCore,headers=[...Object.values(C.MAP),'标签','套餐','转化备注'];
+  const values={'转化CAM':'20928156567025090001',user_id:'20928156567025090002','转化日期':'2026-10-01 09:00:00',
+    '最近下单日期':'2026-10-02 10:00:00','转化下单量':5,'支付订单':3,'是否流失':'no','流失日期':''};
+  const parsed=C.readMatrix([headers,[...Object.keys(C.MAP).map(k=>values[k]??''),'[唐华,unmapped商品,新品]','Advanced','不能覆盖人工备注']]);
+  const [row]=D.importRows(parsed,[{'转化CAM':'20928156567025090001',__rowVersion:7}]);
+  assert.equal(row.expected_version,7);assert.equal(row.data.converted_at,'2026-10-01T09:00:00+08:00');
+  assert.equal(row.data.is_lost,false);assert.equal(row.data.source_extras['套餐'],'Advanced');
+  assert.equal(row.data.conversion_notes,undefined);assert.equal(row.data.source_extras['转化备注'],undefined);
+  assert.deepEqual(row.data.conversion_reasons,['Unmmapped商品']);assert.ok(row.data.source_tags.includes('新品'));
+});
+test('分块按行数和实际字节上限，保留所有行，超大单行明确报错',()=>{
+  const rows=Array.from({length:401},(_,i)=>({row_number:i+1,data:{cam_id:String(i)}}));
+  assert.deepEqual(D.chunks(rows).map(c=>c.length),[200,200,1]);
+  assert.equal(D.chunks(rows).flat().length,401);
+  assert.throws(()=>D.chunks([{data:{x:'中'.repeat(400000)}}]),/单行数据过大/);
+});
+test('共享预警映射保留服务端确认权限、行版本和原文件名',()=>{
+  const warning=D.fromAlert({id:'alert',source_cam_id:'cam',alert_state:'pending',row_version:4,import_batch_id:'batch',
+    created_at:'2026-10-23T02:00:00Z',source_rows:[2],is_confirmable:true,before_values:{},
+    candidate_values:{cam_id:'cam',order_count:1},issues:[{type:'异常订单预警',field:'转化下单量',before:5,after:1,hard:false}]},[{id:'batch',file_name:'daily.xlsx'}]);
+  assert.equal(warning.source,'daily.xlsx');assert.equal(warning.__rowVersion,4);assert.equal(warning.entry.action,'review');assert.equal(warning.entry.problems[0].after,1);
+});

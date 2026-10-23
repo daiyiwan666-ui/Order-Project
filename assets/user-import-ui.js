@@ -2,6 +2,7 @@
 const ImportCore = UserImportCore;
 let importWorkbook = null, importPlan = null, importFileName = '', warningFilter = 'all';
 let importReadSequence = 0;
+let importParsed = null, importFileDigest = '', importCloudSession = null;
 let workspaceSnapshot = null;
 try { workspaceSnapshot = localStorage.getItem('tdfx_workspace_v20'); } catch (_) {}
 const importInput = document.getElementById('userImportFile');
@@ -74,13 +75,14 @@ refreshUserLossBell = function () {
 };
 function warningCard(a) {
   const entry = a.entry, canLocate = users.some(r => String(r['转化CAM']) === a.cam);
+  const canEdit = document.documentElement.dataset.storage!=='cloud'||window.OrderCloud?.canEdit();
   const changes = entry.problems.map(p => `<tr><td>${esc(p.type)}</td><td>${esc(p.field)}</td><td>${esc(p.before)}</td><td>${esc(p.after)}</td><td>${esc(p.message)}</td></tr>`).join('');
   return `<article class="warning-card"><div class="warning-card-head"><strong>CAM ${esc(a.cam || '缺失')}</strong><span class="mini">${esc(a.source)} · 行 ${esc(entry.rowNumber)} · ${esc(a.createdAt)}</span></div>
     <div class="mini">${entry.action === 'review' ? '该行更新已暂缓，当前仍保留历史值。确认后会同步订单、流失信息、状态和出单时长。' : '该记录未写入，请修正源文件后重新上传。'}</div>
     <div class="warning-table-wrap"><table class="table warning-table"><thead><tr><th>类型</th><th>字段</th><th>历史/对照值</th><th>文件值</th><th>说明</th></tr></thead><tbody>${changes}</tbody></table></div>
     <div class="warning-actions">${canLocate ? `<button class="btn" data-warning-locate="${esc(a.cam)}">查看</button>` : '<span class="mini">尚未入表</span>'}
-      ${entry.action === 'review' ? `<button class="btn primary" data-warning-approve="${esc(a.id)}">确认更新</button>` : ''}
-      <button class="btn" data-warning-ignore="${esc(a.id)}">忽略本次</button></div></article>`;
+      ${canEdit&&entry.action === 'review' ? `<button class="btn primary" data-warning-approve="${esc(a.id)}">确认更新</button>` : ''}
+      ${canEdit?`<button class="btn" data-warning-ignore="${esc(a.id)}">忽略本次</button>`:''}</div></article>`;
 }
 openLossModal = function () { openWarningCentre(); };
 function openWarningCentre() {
@@ -94,12 +96,19 @@ function openWarningCentre() {
     ${filtered.map(warningCard).join('')}${lossCards || ''}${!filtered.length && !lossCards ? '<div class="empty">暂无待处理预警</div>' : ''}`;
   $('#lossModal').classList.add('open');
 }
-$('#lossBody').addEventListener('click', event => {
+$('#lossBody').addEventListener('click', async event => {
   const button = event.target.closest('button'); if (!button) return;
   if (button.dataset.warningFilter) { warningFilter = button.dataset.warningFilter; openWarningCentre(); return; }
   if (button.dataset.warningLocate) { locateUserByCam(button.dataset.warningLocate); return; }
   const id = button.dataset.warningApprove || button.dataset.warningIgnore;
   const warning = userAlerts.find(a => a.id === id && a.state === 'pending'); if (!warning) return;
+  if (document.documentElement.dataset.storage === 'cloud') {
+    if(button.dataset.warningApprove && !confirm(`确认将 CAM ${warning.cam} 更新为文件中的数值？`))return;
+    button.disabled=true;
+    try {await OrderCloud.resolveAlert(warning,button.dataset.warningApprove?'confirm':'ignore');openWarningCentre();}
+    catch(error){alert(error.message);}finally{button.disabled=false;}
+    return;
+  }
   try {
     if (button.dataset.warningApprove) {
       if (!confirm(`确认将 CAM ${warning.cam} 更新为文件中的数值？此操作会同步该行订单和相关状态。`)) return;
@@ -120,6 +129,7 @@ function buildImportPreview() {
   const matrix = XLSX.utils.sheet_to_json(importWorkbook.Sheets[sheet], { header: 1, defval: '', raw: true });
   const owners = users.flatMap(r => ImportCore.tags(r['负责人']));
   const parsed = ImportCore.readMatrix(matrix, owners, { date1904: !!importWorkbook.Workbook?.WBProps?.date1904 });
+  importParsed = parsed;
   importPlan = ImportCore.planImport(parsed, users, USER_COLS);
   const totals = { new: 0, update: 0, unchanged: 0, review: 0, blocked: 0 };
   importPlan.forEach(e => totals[e.action]++);
@@ -142,7 +152,7 @@ function showImportError(error) {
 async function loadImportFile() {
   const file = importInput.files[0]; if (!file) return;
   const readSequence = ++importReadSequence;
-  importFileName = file.name; importWorkbook = null; importPlan = null;
+  importFileName = file.name; importWorkbook = null; importPlan = null; importParsed = null; importCloudSession = null;
   $('#userImportApply').disabled = true; $('#userImportSummary').textContent = '正在读取文件…';
   $('#userImportPreview').innerHTML = ''; $('#userImportMappings').innerHTML = ''; $('#userImportPages').innerHTML = '';
   $('#userImportFileName').textContent = file.name; importModal.classList.add('open');
@@ -151,6 +161,10 @@ async function loadImportFile() {
     if (!/\.(xlsx|xls|xlsm|xlsb|xlt|xltx|xltm|csv|tsv|ods)$/i.test(file.name)) throw new Error('请选择支持的Excel、CSV、TSV或ODS文件。');
     if (file.size > 32 * 1024 * 1024) throw new Error('文件超过32MB，请拆分后上传。');
     const buffer = await file.arrayBuffer();
+    if(document.documentElement.dataset.storage==='cloud') {
+      const digest=await crypto.subtle.digest('SHA-256',buffer);
+      importFileDigest=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
+    }
     if (readSequence !== importReadSequence) return;
     const isText = /\.(csv|tsv)$/i.test(file.name);
     const input = isText ? new TextDecoder($('#userImportEncoding').value).decode(buffer) : buffer;
@@ -169,11 +183,28 @@ $('#uploadUsers').addEventListener('click', () => {
   closeTagEditor(); closeColumnFilter(); importInput.value = ''; importInput.click();
 });
 importInput.addEventListener('change', loadImportFile);
-$('#userImportSheet').addEventListener('change', () => { try { buildImportPreview(); } catch (error) { showImportError(error); } });
+$('#userImportSheet').addEventListener('change', () => { importCloudSession=null;try { buildImportPreview(); } catch (error) { showImportError(error); } });
 $('#userImportEncoding').addEventListener('change', loadImportFile);
 $('#userImportClose').addEventListener('click', () => { importModal.classList.remove('open'); importPlan = null; });
-$('#userImportApply').addEventListener('click', () => {
+$('#userImportApply').addEventListener('click', async () => {
   if (!importPlan) return;
+  if(document.documentElement.dataset.storage==='cloud') {
+    const button=$('#userImportApply');button.disabled=true;
+    try {
+      if(!importCloudSession) {
+        buildImportPreview();
+        if(importParsed.rows.length>10000)throw new Error('单次最多10000条数据，请拆分文件。');
+        importCloudSession={request_id:crypto.randomUUID(),file_name:importFileName,file_sha256:importFileDigest,
+          sheet_name:$('#userImportSheet').value,rows:OrderCloudData.importRows(importParsed,users)};
+      }
+      const result=await OrderCloud.importFile(importCloudSession,text=>{$('#userImportSummary').textContent=text;});
+      $('#userImportResult').textContent=`${importFileName}：新增 ${result.inserted_rows}，更新 ${result.updated_rows}，无变化 ${result.unchanged_rows}，预警 ${result.flagged_rows}，合并重复行 ${result.duplicate_rows||0}。`;
+      importPlan=null;importCloudSession=null;importModal.classList.remove('open');renderAll();
+      if(result.flagged_rows){warningFilter='all';openWarningCentre();}
+    }catch(error){$('#userImportSummary').textContent=`导入未全部完成：${error.message}。可再次点击继续同一批次，已完成部分不会重复写入。`;}
+    finally{button.disabled=!importPlan;}
+    return;
+  }
   try {
     // Rebuild at application time, so edits in another UI action are not silently lost.
     buildImportPreview();
